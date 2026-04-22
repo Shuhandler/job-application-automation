@@ -1,5 +1,11 @@
 # Automated Job Application Pipeline — System Design
 
+> [!NOTE]
+> **Implementation status (last updated 2026-04-22):**
+> - ✅ **Phase 0 — Scaffolding:** complete. See [§2 Phase 0](#phase-0--scaffolding-12-days--complete) for the full checklist and [§6 Phase 0 Handoff](#6-phase-0-handoff-notes) for decisions made, deviations from this document, and entry points for Phase 1.
+> - ⏳ **Phase 1 — Source Monitoring:** not started. Start here: `src/scrapers/` is an empty package. Company YAML schema and Celery Beat wiring are unbuilt.
+> - ⏳ **Phases 2–6:** not started.
+
 ## 1. System Architecture
 
 ### High-Level Dataflow
@@ -108,25 +114,26 @@ class EmailEvent(Base):
 
 ## 2. Implementation Phases
 
-### Phase 0 — Scaffolding (1–2 days)
-- [ ] Repo structure:
+### Phase 0 — Scaffolding (1–2 days) — ✅ COMPLETE
+- [x] Repo structure:
   ```
   src/
-  ├── scrapers/          # one module per source
-  ├── filters/           # keyword scoring + NLP
-  ├── referrals/         # LinkedIn connection lookup
-  ├── resumes/           # resume variant selection logic
-  ├── drafting/          # LLM cover letter generation
-  ├── discord_bot/       # discord.py bot + webhook delivery
-  ├── email_tracker/     # Gmail API integration + status CRM
-  ├── db/                # SQLAlchemy models + migrations
-  ├── config/            # Pydantic settings
-  └── cli/               # Typer CLI entrypoints
+  ├── scrapers/          # one module per source                       (Phase 1 — empty stub)
+  ├── filters/           # keyword scoring + NLP                       (Phase 2 — empty stub)
+  ├── referrals/         # LinkedIn connection lookup                  (Phase 3 — empty stub)
+  ├── resumes/           # resume variant selection logic              (Phase 4a — empty stub)
+  ├── drafting/          # LLM cover letter generation                 (Phase 4b — empty stub)
+  ├── discord_bot/       # discord.py bot + webhook delivery           (Phase 5 — empty stub)
+  ├── email_tracker/     # Gmail API integration + status CRM          (Phase 6 — empty stub)
+  ├── db/                # SQLAlchemy models + Alembic env             (Phase 0 — done)
+  ├── config/            # Pydantic Settings + personal-info YAML      (Phase 0 — done)
+  └── cli/               # Typer CLI entrypoints                       (Phase 0 — done)
   ```
-- [ ] Pydantic config: personal info schema (name, email, phone, university, GPA, grad date, work auth, skills, experiences, resume paths)
-- [ ] SQLAlchemy models + Alembic
-- [ ] `.env` template with all required secrets
-- [ ] `pyproject.toml` with dependency groups
+- [x] Pydantic config: personal info schema (name, email, phone, university, GPA, grad date, work auth, skills, experiences, resume paths) — `src/config/personal.py` (`PersonalInfo`, loaded from YAML; example at `config/personal.example.yaml`)
+- [x] SQLAlchemy models + Alembic — `src/db/models.py` (`Job`, `ResumeVariant`, `ReferralContact`, `EmailEvent`) + `src/db/migrations/versions/0001_initial_schema.py`
+- [x] `.env` template with all required secrets — `.env.example`, consumed by `src/config/settings.py`
+- [x] `pyproject.toml` with dependency groups — core deps + per-phase optional extras (`scraping`, `nlp`, `celery`, `discord`, `pdf`, `llm`, `email`, `postgres`, `all`) + PEP 735 `dev` group
+- [x] Tooling beyond the spec: Ruff (lint + format), Mypy (strict), Pytest + asyncio, pre-commit hooks, Hatchling build backend, `uv` as the package/project manager, `docker-compose.yml` for Postgres + Redis, Typer CLI entry point (`jaa version|config show|config personal|db upgrade|db downgrade|db revision|db current`)
 
 ### Phase 1 — Source Monitoring (3–5 days)
 - [ ] **API-based sources (no scraping needed):**
@@ -429,3 +436,99 @@ For applications with a "portfolio" or "website" field, auto-generate a personal
 
 > [!NOTE]
 > **P6 can run independently** once you start manually submitting applications. Even before the full bot is built, you can deploy the email parser against your Gmail to start tracking statuses and posting updates to `#status-updates`.
+
+---
+
+## 6. Phase 0 Handoff Notes
+
+Context for whoever picks up Phase 1. Reflects the state of `main` as of 2026-04-22.
+
+### 6a. Decisions Locked In During Phase 0
+
+These fix the shape of every later phase:
+
+| Area | Decision | Rationale |
+|---|---|---|
+| Package / project manager | `uv` (Astral) | Fast installs; manages Python toolchain; PEP 621 native. `uv.lock` is committed. |
+| Build backend | Hatchling | Pairs cleanly with `uv` + PEP 621 metadata. |
+| Python version | `>=3.12` (`.python-version` = 3.12) | Matches spec §1; enables modern typing syntax. |
+| Personal info source | YAML (`config/personal.yaml`, gitignored) loaded via Pydantic | `.env` used only for secrets and deployment knobs. See `src/config/personal.py`. |
+| Secrets / env | `pydantic-settings` + `.env` (aliased uppercase vars), `SecretStr` for all tokens | Central, typed, masked in logs. See `src/config/settings.py`. |
+| SQLAlchemy execution | Sync only in P0 (`Session`, `sessionmaker`) | Celery + CLI are sync. An async engine can be layered in at P5 against the same `Base` — **no model changes needed**. |
+| ORM style | SQLAlchemy 2.0 typed `Mapped[...]` + `mapped_column(...)` | Native dataclass-like models; strict-mypy friendly. |
+| JSON-typed columns | Cross-dialect `sqlalchemy.JSON` | Same schema works for SQLite and Postgres. Postgres-only `JSONB` operations are deliberately **not** used. |
+| Enum columns | `Enum(..., native_enum=False, length=32)` | Portable across SQLite + Postgres; stored as `VARCHAR`. |
+| DB default | SQLite at `./data/app.db` for dev | `data/` is gitignored; parent dir auto-created on first connect. `PRAGMA foreign_keys=ON` enforced via connect event. |
+| DB prod | Postgres via `docker-compose.yml` (`postgres` + `redis` services only, no app container) | Flip `DATABASE_URL` to `postgresql+psycopg://jaa:jaa@localhost:5432/jaa`. |
+| Alembic | Initial revision `0001` hand-written to mirror `Base.metadata`; `render_as_batch=True` for SQLite ALTERs | Autogenerate will work correctly for future revisions because `env.py` imports `src.db.models`. |
+| CLI framework | Typer + Rich | Spec §1. Subcommands call `python -m alembic` internally. |
+| Lint / format | Ruff (E/F/W/I/B/UP/N/SIM/RUF) + `ruff format` | Replaces black + isort + flake8. |
+| Type check | Mypy `strict=true` with `pydantic.mypy` plugin | Migrations directory excluded. |
+| Tests | Pytest, `asyncio_mode=auto`, `filterwarnings=error` | 14 passing baseline tests including an Alembic upgrade/downgrade/upgrade round-trip. |
+| Dependency grouping | Core deps minimal; feature-specific libs under `[project.optional-dependencies]` (`scraping`, `nlp`, `celery`, `discord`, `pdf`, `llm`, `email`, `postgres`); `all` extra composes them; `dev` group via PEP 735 | Lets each phase opt into its libs without bloating a minimal install. |
+
+### 6b. Deliberately Deferred Work
+
+Do **not** treat any of these as forgotten — they are parked until their phase:
+
+| Deferred | Reason | When to build |
+|---|---|---|
+| LLM client (`litellm` / OpenAI / Anthropic SDKs) | Not needed for P1–P3; declared under `[project.optional-dependencies].llm` only | Phase 4b |
+| `celery` + `redis` runtime deps | Not needed until there's a task to schedule | Phase 1 (add via `uv sync --extra celery`) |
+| Async SQLAlchemy engine + `AsyncSession` | `discord.py` is the only async consumer | Phase 5 — add `create_async_engine(settings.database_url)` in `src/db/base.py`; models are already engine-agnostic |
+| App Dockerfile + full deployment stack | Outside Phase 0 scope; infra services (Postgres, Redis) are scaffolded in `docker-compose.yml` | Pre-production, likely after P5 |
+| Company target list YAML (`config/companies.yaml`) | Belongs to the scraping layer | Phase 1 — schema sketched in §2 Phase 1 |
+| Keyword taxonomy YAML | Belongs to the filter layer | Phase 2 |
+| Discord server setup + bot token | Cannot be tested without a real guild | Phase 5 |
+| Gmail OAuth credentials + token files | Paths reserved in `.env.example` but files are gitignored | Phase 6 |
+| Structured logging | Using stdlib + `rich` for now; swap to `structlog` if needed | When log volume justifies it |
+| CI pipeline (GitHub Actions) | Pre-commit runs locally and is sufficient for solo dev | Add if/when collaborators join |
+
+### 6c. Entry Points for Phase 1 (Source Monitoring)
+
+Concrete starting points for whoever implements Phase 1:
+
+1. **Add runtime deps for this phase:**
+   ```bash
+   uv sync --extra scraping --extra celery --group dev
+   ```
+   This pulls in `httpx`, `parsel`, `playwright`, `playwright-stealth`, `celery[redis]`, and `redis`.
+
+2. **New files to create (none exist yet):**
+   - `config/companies.yaml` — target list; schema already sketched in §2 Phase 1.
+   - `src/config/companies.py` — Pydantic loader mirroring `src/config/personal.py`.
+   - `src/scrapers/base.py` — `Scraper` protocol / ABC returning `list[JobPayload]` (a Pydantic DTO, **not** the ORM `Job`).
+   - `src/scrapers/greenhouse.py`, `src/scrapers/lever.py` — API-based scrapers first (no Playwright).
+   - `src/scrapers/linkedin.py`, `src/scrapers/handshake.py`, `src/scrapers/workday.py` — Playwright scrapers after APIs work end-to-end.
+   - `src/tasks/` (new package) — Celery app, beat schedule, and per-source tasks.
+   - `src/cli/` — register a `scrape` sub-app with `once` / `beat` / `worker` commands.
+
+3. **Persistence hooks that already exist:**
+   - `src/db/models.py::Job` — has `source`, `external_id`, `url`, `application_url`, `description_raw`, `description_clean`, a `UniqueConstraint("source", "external_id")`, and `status` defaulting to `JobStatus.DISCOVERED`. Insert with a `SessionLocal()` / `get_session()` from `src/db/base.py`; dedup by catching `IntegrityError` or using `INSERT … ON CONFLICT DO NOTHING` (Postgres) / `INSERT OR IGNORE` (SQLite).
+   - `src/db/models.py::JobStatus` — full state enum; Phase 1 only writes `DISCOVERED`.
+
+4. **Config hooks that already exist:**
+   - `settings.redis_url` — Celery broker/result backend.
+   - `settings.proxy_url`, `settings.linkedin_storage_state_path`, `settings.handshake_storage_state_path` — plumbed through but unused until scrapers exist.
+
+5. **Test pattern to copy:** `tests/conftest.py::db_session` gives a fresh in-memory schema per test; `tests/test_models.py` shows the insert + unique-constraint pattern. Phase 1 tests should assert dedup on `(source, external_id)` and clean `JobPayload → Job` hydration.
+
+6. **Things *not* to rebuild:**
+   - Don't add a second settings object — extend `src/config/settings.py` with new fields.
+   - Don't create a new migration to rename fields in `Job` unless the schema changes; `Job` already covers every P1–P6 field.
+   - Don't switch to async SQLAlchemy just for scrapers — `httpx.AsyncClient` inside a Celery task is fine, and DB writes can batch at the end of each task synchronously.
+
+### 6d. How to Verify a Clean Working Copy
+
+```bash
+uv sync --group dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+uv run pytest            # expect 14 passed
+uv run jaa config personal --path config/personal.example.yaml
+uv run jaa db upgrade head
+uv run jaa db current    # expect: 0001 (head)
+```
+
+All of the above pass on `main` as of this commit.

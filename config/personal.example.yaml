@@ -1,0 +1,89 @@
+# Copy this file to `config/personal.yaml` and fill in your details.
+# `config/personal.yaml` is gitignored so real data never leaves your machine.
+#
+# Schema: src/config/personal.py :: PersonalInfo
+
+full_name: "Jane Doe"
+preferred_name: "Jane"
+email: "jane.doe@example.edu"
+phone: "+1-555-123-4567"
+location: "New York, NY"
+
+# One of: us_citizen, us_permanent_resident, f1_opt, f1_cpt, h1b,
+#         requires_sponsorship, other
+work_authorization: us_citizen
+requires_sponsorship_now: false
+requires_sponsorship_future: false
+
+education:
+  university: "Example University"
+  degree: "B.S."
+  major: "Mathematics"
+  minor: "Computer Science"
+  gpa: 3.9
+  graduation_date: 2026-05-15
+  coursework:
+    - "Stochastic Calculus"
+    - "Probability Theory"
+    - "Linear Algebra"
+    - "Data Structures"
+    - "Machine Learning"
+
+experiences:
+  - company: "Acme Research Lab"
+    title: "Quantitative Research Intern"
+    start_date: 2025-06-01
+    end_date: 2025-08-15
+    location: "New York, NY"
+    bullets:
+      - "Built Monte Carlo pricer for path-dependent options in C++"
+      - "Improved alpha signal SR by 0.15 via feature engineering in Python"
+    tech_stack: ["C++", "Python", "NumPy", "pandas"]
+
+projects:
+  - name: "Options Pricing Library"
+    description: "Black-Scholes, binomial tree, and Monte Carlo pricing in modern C++."
+    url: "https://github.com/janedoe/options-pricing"
+    tech_stack: ["C++20", "CMake", "Catch2"]
+
+skills:
+  languages: ["Python", "C++", "Java", "SQL"]
+  frameworks: ["PyTorch", "NumPy", "pandas", "FastAPI"]
+  tools: ["Git", "Docker", "Linux", "Bloomberg"]
+  math:
+    - "Stochastic calculus"
+    - "Probability theory"
+    - "Linear algebra"
+    - "Numerical methods"
+  other: ["Putnam Honorable Mention 2024"]
+
+links:
+  linkedin: "https://linkedin.com/in/janedoe"
+  github: "https://github.com/janedoe"
+  portfolio: "https://janedoe.dev"
+
+resume_variants:
+  - name: quant
+    file_path: "resumes/quant.pdf"
+    description: "Emphasizes stochastic calculus, options pricing, C++, and research experience."
+    keywords:
+      - quantitative
+      - trading
+      - stochastic
+      - options
+      - pricing
+      - C++
+      - probability
+      - statistics
+  - name: tech
+    file_path: "resumes/tech.pdf"
+    description: "Emphasizes systems design, distributed systems, Python/Java, and ML pipelines."
+    keywords:
+      - software engineer
+      - distributed
+      - systems
+      - Python
+      - Java
+      - ML
+      - cloud
+      - backend
