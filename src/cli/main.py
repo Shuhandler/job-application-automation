@@ -22,6 +22,7 @@ from rich import print as rprint
 from rich.table import Table
 
 from src import __version__
+from src.cli.scrape import scrape_app
 from src.config import get_settings, load_personal_info
 
 app = typer.Typer(
@@ -36,6 +37,7 @@ config_app = typer.Typer(name="config", help="Inspect configuration.", no_args_i
 
 app.add_typer(db_app)
 app.add_typer(config_app)
+app.add_typer(scrape_app)
 
 
 @app.command()

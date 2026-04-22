@@ -1,0 +1,77 @@
+# Copy this file to `config/sources.yaml` and edit. Gitignored in prod usage.
+# Schema: src/config/sources.py :: SourcesConfig
+
+defaults:
+  locations:
+    - "United States"
+    - "Remote"
+    - "Hybrid"
+
+companies:
+  # ---------- Greenhouse (public JSON API; no auth) -----------------------
+  - name: "Jane Street"
+    ats: greenhouse
+    board_id: "janestreet"
+    priority: 1
+    locations: ["New York", "Remote"]
+    tags: ["quant", "hft"]
+
+  - name: "Stripe"
+    ats: greenhouse
+    board_id: "stripe"
+    priority: 2
+    tags: ["tech", "fintech"]
+
+  # ---------- Lever (public JSON API; no auth) ----------------------------
+  - name: "Anthropic"
+    ats: lever
+    board_id: "anthropic"
+    priority: 1
+    search_params:
+      mode: "json"
+    tags: ["ai", "ml"]
+
+  # ---------- Workday (Playwright scraper, public careers site) -----------
+  - name: "Citadel"
+    ats: workday
+    careers_url: "https://www.citadel.com/careers/open-opportunities/"
+    priority: 1
+    locations: ["New York", "Chicago", "Miami"]
+    tags: ["quant", "hft"]
+
+  # ---------- Custom (user-supplied CSS selectors) ------------------------
+  - name: "Google"
+    ats: custom
+    careers_url: "https://www.google.com/about/careers/applications/jobs/results/"
+    priority: 2
+    search_params:
+      q: "new grad software engineer"
+    tags: ["tech", "big-tech"]
+    selectors:
+      listing: "div.sMn82b"
+      title: "h3.QJPWVe"
+      url: "a.WpHeLc::attr(href)"
+      location: "span.r0wTof"
+      description: "div.iflMsb"
+
+linkedin:
+  enabled: false   # flip to true after `uv run playwright install chromium` and
+                   # after saving `config/linkedin_state.json` via a manual login
+  searches:
+    - query: "new grad quantitative researcher"
+      locations: ["United States", "Remote"]
+      experience_levels: [entry_level, internship]
+      posted_within_days: 7
+      tags: ["quant"]
+    - query: "software engineer new grad 2026"
+      locations: ["United States"]
+      experience_levels: [entry_level]
+      posted_within_days: 7
+      tags: ["tech"]
+
+handshake:
+  enabled: false
+  school_subdomain: "your-school"  # e.g. "upenn" → upenn.joinhandshake.com
+  searches:
+    - query: "quantitative researcher"
+      locations: ["United States"]

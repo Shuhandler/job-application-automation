@@ -3,8 +3,9 @@
 > [!NOTE]
 > **Implementation status (last updated 2026-04-22):**
 > - ✅ **Phase 0 — Scaffolding:** complete. See [§2 Phase 0](#phase-0--scaffolding-12-days--complete) for the full checklist and [§6 Phase 0 Handoff](#6-phase-0-handoff-notes) for decisions made, deviations from this document, and entry points for Phase 1.
-> - ⏳ **Phase 1 — Source Monitoring:** not started. Start here: `src/scrapers/` is an empty package. Company YAML schema and Celery Beat wiring are unbuilt.
-> - ⏳ **Phases 2–6:** not started.
+> - ✅ **Phase 1 — Source Monitoring:** complete. See [§2 Phase 1](#phase-1--source-monitoring-35-days--complete) for the full checklist and [§7 Phase 1 Handoff](#7-phase-1-handoff-notes) for decisions locked in, deferred work, and entry points for Phase 2.
+> - ⏳ **Phase 2 — Filtering Engine:** not started. Start here: `src/filters/` is an empty package. Keyword taxonomy YAML + scoring logic are unbuilt.
+> - ⏳ **Phases 3–6:** not started.
 
 ## 1. System Architecture
 
@@ -135,34 +136,19 @@ class EmailEvent(Base):
 - [x] `pyproject.toml` with dependency groups — core deps + per-phase optional extras (`scraping`, `nlp`, `celery`, `discord`, `pdf`, `llm`, `email`, `postgres`, `all`) + PEP 735 `dev` group
 - [x] Tooling beyond the spec: Ruff (lint + format), Mypy (strict), Pytest + asyncio, pre-commit hooks, Hatchling build backend, `uv` as the package/project manager, `docker-compose.yml` for Postgres + Redis, Typer CLI entry point (`jaa version|config show|config personal|db upgrade|db downgrade|db revision|db current`)
 
-### Phase 1 — Source Monitoring (3–5 days)
-- [ ] **API-based sources (no scraping needed):**
-  - Greenhouse: `GET https://boards-api.greenhouse.io/v1/boards/{company}/jobs` — public JSON
-  - Lever: `GET https://api.lever.co/v0/postings/{company}` — public JSON
-  - Maintain a YAML config of target companies + their ATS type
-- [ ] **Scraping-based sources:**
-  - LinkedIn: authenticated session via saved `storage_state`; scrape `/jobs/search/` results
-  - Handshake: `.edu` SSO auth state; scrape posting feeds
-  - Workday / iCIMS / custom: Playwright per-company scrapers
-- [ ] **Company config file:**
-  ```yaml
-  companies:
-    - name: Jane Street
-      ats: greenhouse
-      board_id: janestreet
-      priority: 1
-    - name: Citadel
-      ats: workday
-      careers_url: https://www.citadel.com/careers/
-      priority: 1
-    - name: Google
-      ats: custom
-      careers_url: https://careers.google.com/jobs/results/
-      search_params: {q: "new grad software engineer"}
-      priority: 2
-  ```
-- [ ] Celery Beat scheduler: poll API sources every 5 min, scraping sources every 15 min
-- [ ] Dedup on `(source, external_id)` — skip if already in DB
+### Phase 1 — Source Monitoring (3–5 days) — ✅ complete
+- [x] **API-based sources** — `src/scrapers/greenhouse.py` (`GreenhouseScraper`) and `src/scrapers/lever.py` (`LeverScraper`); both use async `httpx`, parse descriptions with selectolax, and skip malformed entries with `pydantic.ValidationError` guards.
+- [x] **Scraping-based sources** — all scaffolded via a shared Playwright helper (`src/scrapers/browser.py::browser_context`, stealth-patched, UA rotation, storage-state reuse):
+  - `src/scrapers/linkedin.py::LinkedInScraper` — `/jobs/search/` with `f_E` experience levels + `f_TPR` recency, per search in `sources.yaml`
+  - `src/scrapers/handshake.py::HandshakeScraper` — school-scoped feed (`<school>.joinhandshake.com/stu/postings`)
+  - `src/scrapers/workday.py::WorkdayScraper` — sniffs the tenant's `/wday/cxs/<tenant>/<site>/jobs` XHR and paginates it directly
+  - `src/scrapers/custom.py::CustomScraper` — pure CSS-selector-driven via `CustomSelectors` in config
+- [x] **Company config file** — extended schema in `src/config/sources.py` (`CompanyConfig`, `LinkedInConfig`, `HandshakeConfig`, `Defaults`) + example at `config/sources.example.yaml`. Adds `locations` allow-list, `departments` allow-list, `tags`, `notes`, `enabled`, `priority`, and `defaults.locations` fallback.
+- [x] **Celery + Beat** — `src/tasks/app.py` (Celery app) + `src/tasks/scrape.py` (`run_scraper`, `dispatch_api_scrapes` @ 5 min, `dispatch_browser_scrapes` @ 15 min, `run_all_sync` for CLI). Tasks have `autoretry_for=Exception`, exponential `retry_backoff` with jitter, `rate_limit="20/m"`, `acks_late=True`.
+- [x] **Dedup on `(source, external_id)`** — dialect-aware `INSERT ... ON CONFLICT DO NOTHING` in `src/scrapers/persistence.py::upsert_jobs` (SQLite + PostgreSQL branches, portable fallback for other dialects).
+- [x] **Location allow-list filtering** — `src/scrapers/location.py` recognizes `"Remote"`, explicit US tokens, and `"City, ST"` 2-letter state codes; applied per-entry with `defaults.locations` fallback.
+- [x] **CLI:** `jaa scrape sources|once|worker|beat|dispatch` wired in `src/cli/scrape.py`.
+- [x] Tests: `test_sources_config.py`, `test_html_clean.py`, `test_location.py`, `test_persistence.py`, `test_greenhouse.py`, `test_lever.py`, `test_scrape_task_integration.py` (47 tests total, all green).
 
 ### Phase 2 — Filtering Engine (2–3 days)
 - [ ] **Keyword taxonomy** (configurable in YAML):
@@ -525,10 +511,102 @@ uv sync --group dev
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
-uv run pytest            # expect 14 passed
+uv run pytest            # expect 47 passed (14 from P0 + 33 from P1)
 uv run jaa config personal --path config/personal.example.yaml
 uv run jaa db upgrade head
 uv run jaa db current    # expect: 0001 (head)
 ```
 
+All of the above pass on `main` as of the Phase 0 commit.
+
+---
+
+## 7. Phase 1 Handoff Notes
+
+> *Written at the end of Phase 1. Skim before starting Phase 2 (Filtering Engine) — these are the decisions and constraints the next phase inherits.*
+
+### 7a. Decisions Locked In During Phase 1
+
+| # | Choice | Picked | Why |
+|---|---|---|---|
+| D1 | Source coverage | All of: Greenhouse + Lever + LinkedIn + Handshake + Workday + custom | Requirement: breadth matters more than any one source. API-based (GH/Lever) are zero-friction; the rest are Playwright-backed. |
+| D2 | Scheduler | Celery + Beat + Redis | Production-grade retries, rate limits, and observability. Broker is the same Redis used elsewhere. |
+| D3 | HTML → text cleaner | `selectolax` | Fastest HTML parser in Python; drops script/style; preserves block-level newlines. |
+| D4 | Dedup write strategy | Dialect-aware `INSERT ... ON CONFLICT DO NOTHING` on `(source, external_id)` | Atomic, race-safe under concurrent workers. SQLite + PostgreSQL branches in `src/scrapers/persistence.py`; portable fallback for other dialects. |
+| D5 | Company config shape | *Extended* — locations, departments, tags, notes, enabled, priority, defaults + custom selector block | One schema carries all per-company tuning needed by every scraper + downstream filtering. |
+| D6 | Region filter | Per-company allow-list with fallback to `defaults.locations` | Filtering happens *after* `fetch`, inside `src.tasks.scrape.run_scraper`. Recognizes `"Remote"`, `"United States"`, and `"City, ST"` 2-letter state codes. |
+| D7 | Playwright footprint | Chromium only (not Firefox / WebKit) | Enough for every targeted source; smaller install. |
+| D8 | Browser stealth | `playwright-stealth` v2 (class-based API, `Stealth().apply_stealth_async(ctx)`) + UA rotation in `src/scrapers/browser.py` | Minimum viable evasion; still assumes real `storage_state` for LinkedIn / Handshake. |
+| D9 | Task granularity | One Celery task per `(source, entry)`; a Beat-scheduled dispatcher fans out | Individual failures retry independently; rate limits applied per task. |
+| D10 | CLI vs. broker for dev | `jaa scrape once` calls `run_all_sync` (no broker); `jaa scrape worker`/`beat` run the real thing | Lets you smoke-test scrapers without Redis. The worker/beat commands wrap `python -m celery` under the active venv. |
+| D11 | DTO layering | `JobPayload` (Pydantic) emitted by scrapers, never touches ORM; mapped to `Job` inside `upsert_jobs` | Scrapers stay pure; persistence lives in one place. |
+
+### 7b. Deliberately Deferred Work
+
+| Item | Deferred to | Notes |
+|---|---|---|
+| Main-content / boilerplate stripping for long JDs | Phase 2 | `clean_html` returns the whole `<body>` plaintext today; Phase 2's filtering engine can decide what to weight. |
+| Richer location parsing (county/metro, "Hybrid — 3 days", EU countries) | Phase 2 / 3 | Current matcher handles the common cases; refine when you see false negatives in practice. |
+| Proxy pool / IP rotation | If/when LinkedIn starts blocking | `browser_context` already plumbs `proxy_url` from `settings.proxy_url`; just populate `.env` and point it at a residential proxy. |
+| Storage-state capture automation | N/A (manual) | One-time `playwright codegen` flow expected. Stored at `config/linkedin_state.json` / `config/handshake_state.json` (paths read from `settings`). |
+| iCIMS / Taleo / SmartRecruiters scrapers | Phase 2+ | Add as new `AtsType` values. The `Scraper` ABC + registry are the only touchpoints. |
+| Real LinkedIn/Handshake/Workday E2E tests | Ongoing | They require real auth + live network. Unit tests cover the pure logic (parsing, filtering, persistence). |
+| Task monitoring UI (Flower) | Phase 6 | Add to `docker-compose.yml` when you need it. Optional. |
+| Structured logging / OpenTelemetry | Phase 6 | Plain `logging.getLogger(__name__)` everywhere for now. |
+
+### 7c. Entry Points for Phase 2 (Filtering Engine)
+
+1. **Where the data lives:** new `Job` rows have `status = "discovered"` and populated `description_clean`. Phase 2 reads `Job`, updates `relevance_score`, `matched_keywords`, `role_category`, and advances `status` to `"matched"` or `"skipped"`.
+
+2. **Install new extras:**
+   ```bash
+   uv sync --extra scraping --extra celery --extra nlp --group dev
+   ```
+
+3. **Files / packages to create:**
+   - `config/filters.yaml` — keyword taxonomy (copy the schema from §2 Phase 2).
+   - `config/filters.example.yaml` — example for git.
+   - `src/filters/config.py` — Pydantic schema for `filters.yaml` + loader; mirror `src/config/sources.py`.
+   - `src/filters/scoring.py` — pure functions: `score_job(job, taxonomy) -> (score, matched_keywords, role_category)`.
+   - `src/filters/engine.py` — wraps a DB session: reads `status = DISCOVERED`, calls `score_job`, writes results, advances status.
+   - `src/tasks/filter.py` — Celery task `filter_new_jobs` on a ~1-minute beat. Add it to `celery_app.conf.beat_schedule` in `src/tasks/app.py`.
+   - `src/cli/filter.py` — `jaa filter once` for sync dev use; register in `src/cli/main.py`.
+
+4. **Hooks already in place you should use, not recreate:**
+   - `src.db.base.SessionLocal` + `with SessionLocal.begin() as s:` — same pattern as `upsert_jobs`.
+   - `src.config.get_settings()` is already cached — add `filters_config_path` alongside `sources_config_path` in `src/config/settings.py`.
+   - `src.scrapers.html_clean.clean_html` if you need to re-clean anything; don't write a second cleaner.
+
+5. **Tests to mirror:**
+   - `tests/test_sources_config.py` is the blueprint for `tests/test_filters_config.py`.
+   - `tests/test_scrape_task_integration.py` shows the monkeypatch-engine pattern — reuse it for a `test_filter_task_integration.py` that seeds `Job` rows then asserts scoring + status advancement.
+
+6. **Things *not* to rebuild:**
+   - Don't re-scrape in the filter task — read from `Job`.
+   - Don't write a new beat schedule; extend `celery_app.conf.beat_schedule` in `src/tasks/app.py`.
+   - Don't add a second CLI app — add a sub-Typer under the existing `jaa` entry point.
+
+### 7d. How to Verify a Clean Working Copy (Phase 1)
+
+```bash
+uv sync --extra scraping --extra celery --group dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+uv run pytest                                               # expect 47 passed
+uv run jaa scrape sources --path config/sources.example.yaml   # prints company table
+uv run jaa config show                                      # secrets masked
+```
+
 All of the above pass on `main` as of this commit.
+
+Optional end-to-end smoke test against a real public ATS board (hits the network):
+
+```bash
+cp config/sources.example.yaml config/sources.yaml
+uv run jaa db upgrade head
+uv run jaa scrape once           # runs every enabled Greenhouse/Lever/etc.
+sqlite3 jaa.db "SELECT source, COUNT(*) FROM jobs GROUP BY source;"
+```
+
+Running `jaa scrape once` a second time should report `persisted=0` across the board — that's the dedup invariant.

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
         default=Path("config/personal.yaml"),
         alias="PERSONAL_INFO_PATH",
     )
+    sources_config_path: Path = Field(
+        default=Path("config/sources.yaml"),
+        alias="SOURCES_CONFIG_PATH",
+    )
 
     # Persistence
     database_url: str = Field(

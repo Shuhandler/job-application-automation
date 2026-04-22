@@ -25,8 +25,9 @@ dependencies = [
 scraping = [
     "httpx>=0.27",
     "parsel>=1.9",
+    "selectolax>=0.3.21",
     "playwright>=1.45",
-    "playwright-stealth>=1.0.6",
+    "playwright-stealth>=2.0",
 ]
 
 # Phase 2 — NLP / filtering
@@ -150,11 +151,18 @@ exclude = ["src/db/migrations/versions"]
 module = [
     "parsel.*",
     "playwright_stealth.*",
+    "selectolax.*",
+    "celery.*",
     "weasyprint.*",
     "googleapiclient.*",
     "google_auth_oauthlib.*",
 ]
 ignore_missing_imports = true
+
+# Celery decorators are untyped; that's out of our control.
+[[tool.mypy.overrides]]
+module = ["src.tasks.*"]
+disallow_untyped_decorators = false
 
 # ---------------------------------------------------------------------------
 # pytest
@@ -171,6 +179,10 @@ asyncio_mode = "auto"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:passlib.*",
+    # httpx/asyncio often leak sockets + event loops at test teardown
+    # when asyncio.run() is used inside tests.
+    "ignore::ResourceWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]
