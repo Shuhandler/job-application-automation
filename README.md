@@ -1,10 +1,10 @@
 # Job Application Automation
 
-A semi-automated pipeline for monitoring, filtering, and staging job applications targeting new graduate and internship roles in Quantitative Finance and Big Tech.
+A pipeline for monitoring, filtering, and preparing job applications targeting new graduate and internship roles in Quantitative Finance and Big Tech — delivered entirely through Discord.
 
 ## How It Works
 
-The system **does not** auto-submit applications. It scrapes job boards, filters for relevant roles, selects the best resume variant, drafts a tailored cover letter, pre-fills the application form in your browser, and hands control to you for review and manual submission.
+The system scrapes job boards, filters for relevant roles, selects the best resume variant (quant or tech), drafts a tailored cover letter, checks your LinkedIn network for referrals, and sends everything to your Discord server as a rich notification with attached files. You review, grab the materials, and apply manually.
 
 ## Core Features
 
@@ -13,8 +13,8 @@ The system **does not** auto-submit applications. It scrapes job boards, filters
 - **Referral Network** — Cross-references matched companies against your LinkedIn connections and drafts referral messages
 - **Resume Variant Selector** — Automatically picks quant or tech resume based on JD keyword analysis
 - **LLM Cover Letters** — Generates tailored cover letters with role-category-aware tone via GPT-4o/Claude
-- **Application Staging** — Pre-fills forms in a headed Playwright browser for your review and manual submit
-- **Email Status Tracker** — Parses Gmail for confirmations, OA invites, interviews, and rejections to build a full CRM
+- **Discord Delivery** — Rich embeds with cover letter PDF, resume, referral info, and direct apply link; reaction-based workflow (✅ applied, ❌ skip, 🔄 regenerate)
+- **Email Status Tracker** — Parses Gmail for confirmations, OA invites, interviews, and rejections; posts updates to Discord
 
 ## Documentation
 
@@ -26,10 +26,9 @@ The system **does not** auto-submit applications. It scrapes job boards, filters
 |---|---|
 | Runtime | Python 3.12+ |
 | Task Queue | Celery + Redis |
-| Browser | Playwright (persistent headed context) |
-| Scraping | httpx + parsel |
+| Discord | discord.py bot + webhooks |
+| Scraping | httpx + parsel + Playwright (headless) |
 | LLM | litellm (OpenAI / Anthropic) |
 | DB | SQLite → PostgreSQL (SQLAlchemy) |
 | Email | Gmail API |
-| Dashboard | Streamlit |
-| Notifications | Discord webhooks |
+| Deployment | Docker Compose on VPS |

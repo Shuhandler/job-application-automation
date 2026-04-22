@@ -9,12 +9,12 @@ graph LR
     A["Source Monitor<br/>(Scrapers + APIs)"] -->|raw postings| B["Parse & Filter<br/>Engine"]
     B -->|matched jobs| C["Referral<br/>Checker"]
     C -->|enriched jobs| D["Resume Selector +<br/>LLM Drafting"]
-    D -->|cover letter + best resume| E["Application Stager<br/>(Playwright)"]
-    E -->|pre-filled browser session| F["YOUR SCREEN<br/>Review & Submit"]
+    D -->|application package| E["Discord Bot<br/>Delivery"]
+    E -->|rich embed + files| F["Your Discord<br/>Server"]
     F -->|confirmation emails| I["Email Parser<br/>(Gmail API)"]
-    I -->|status updates| G["State DB +<br/>Notifications"]
+    I -->|status updates| G["State DB"]
     B -->|all events| G
-    G -->|alerts| H["Discord / SMS"]
+    G -->|status changes| E
 ```
 
 ### Proposed Stack
@@ -23,33 +23,31 @@ graph LR
 |---|---|---|
 | **Runtime** | Python 3.12+ | Ecosystem depth for scraping, NLP, automation |
 | **Task Orchestrator** | Celery + Redis | Distributed task queue; retry/backoff built-in; beat scheduler for polling |
-| **Browser Automation** | Playwright (persistent context) | Key difference: launches a **headed** (visible) browser with `persistent_context` so you see and control the final session |
+| **Discord Integration** | `discord.py` (bot) + webhooks | Bot for interactive commands + reactions; webhooks for one-way alerts |
 | **HTTP Scraping** | `httpx` + `parsel` | Async HTTP client + fast CSS/XPath parsing for API-based sources |
-| **Anti-Detection** | `playwright-stealth`, residential proxies | Only needed for scraping phase; staging phase is your real browser |
+| **Browser Scraping** | Playwright (headless) + `playwright-stealth` | Only for sources that require JS rendering (LinkedIn, Workday) |
 | **NLP / Filtering** | spaCy rule matcher + keyword scoring | Fast local inference; no API cost |
 | **LLM Integration** | OpenAI `gpt-4o` or Claude via `litellm` | Provider-agnostic; easy fallback between providers |
-| **Referral Network** | LinkedIn API (unofficial) + local cache | Cross-reference connections against matched companies |
+| **Referral Network** | LinkedIn data export + local cache | Cross-reference connections against matched companies |
 | **State / DB** | SQLite → PostgreSQL via SQLAlchemy | Job tracking, dedup, audit trail |
 | **Config / Secrets** | Pydantic Settings + `.env` | Typed config; secrets via env vars |
 | **Email Parsing** | Gmail API (`gmail.readonly`) + `google-auth` | Parse confirmation, OA, interview, and rejection emails into status updates |
-| **Notifications** | Discord webhook | Real-time alerts on new matches |
-| **CLI / Dashboard** | Typer CLI + Streamlit | CLI for operations; Streamlit for review queue |
-| **Deployment** | Local (dev Mac) or Docker on VPS | Scraping runs on VPS; staging opens on your local machine |
+| **Deployment** | Docker Compose on VPS (Hetzner / DigitalOcean) | Always-on; Discord bot needs persistent connection |
 
 ### Core Data Model
 
 ```python
 class JobStatus(str, Enum):
-    DISCOVERED = "discovered"
-    MATCHED    = "matched"
-    STAGED     = "staged"
-    SUBMITTED  = "submitted"     # you clicked submit
-    CONFIRMED  = "confirmed"     # confirmation email received
-    OA_RECEIVED = "oa_received"  # online assessment link detected
-    INTERVIEW  = "interview"     # interview invite detected
-    OFFER      = "offer"
-    REJECTED   = "rejected"      # rejection email detected
-    SKIPPED    = "skipped"
+    DISCOVERED  = "discovered"
+    MATCHED     = "matched"
+    NOTIFIED    = "notified"      # Discord notification sent
+    SUBMITTED   = "submitted"     # you applied manually
+    CONFIRMED   = "confirmed"     # confirmation email received
+    OA_RECEIVED = "oa_received"   # online assessment link detected
+    INTERVIEW   = "interview"     # interview invite detected
+    OFFER       = "offer"
+    REJECTED    = "rejected"      # rejection email detected
+    SKIPPED     = "skipped"       # you reacted ❌ in Discord
 
 class Job(Base):
     id: int
@@ -69,8 +67,9 @@ class Job(Base):
     resume_variant: str           # "quant" or "tech"
     resume_match_score: float     # confidence in variant selection
     referral_contacts: list[dict] # [{name, title, linkedin_url, degree}]
-    staged_at: datetime | None
-    submitted_at: datetime | None # you mark this manually
+    discord_message_id: int | None # message ID for reaction tracking
+    notified_at: datetime | None
+    submitted_at: datetime | None # you mark this via Discord reaction
     confirmed_at: datetime | None # from email parser
     oa_deadline: datetime | None  # from email parser
     interview_date: datetime | None
@@ -118,10 +117,9 @@ class EmailEvent(Base):
   ├── referrals/         # LinkedIn connection lookup
   ├── resumes/           # resume variant selection logic
   ├── drafting/          # LLM cover letter generation
-  ├── stager/            # Playwright staging logic
+  ├── discord_bot/       # discord.py bot + webhook delivery
   ├── email_tracker/     # Gmail API integration + status CRM
   ├── db/                # SQLAlchemy models + migrations
-  ├── notifications/     # Discord webhooks
   ├── config/            # Pydantic settings
   └── cli/               # Typer CLI entrypoints
   ```
@@ -195,7 +193,7 @@ class EmailEvent(Base):
     - "0-2 years"
   ```
 - [ ] Scoring: `score = (3 × title_hits + 1 × body_hits) / max_possible`, reject if any `exclude` match
-- [ ] Thresholds: `≥ 0.6` → auto-queue for staging; `0.3–0.6` → manual review queue; `< 0.3` → skip
+- [ ] Thresholds: `≥ 0.6` → auto-notify via Discord; `0.3–0.6` → post to `#review` channel; `< 0.3` → skip
 - [ ] Handle edge case: postings that omit seniority level → flag for manual triage, don't auto-reject
 
 ### Phase 3 — Referral Network Automation (3–4 days)
@@ -214,11 +212,7 @@ class EmailEvent(Base):
     I'm a {degree} student at {university} with experience in {relevant_skills}.
     Would you be open to referring me or connecting me with the hiring team?
     ```
-  - Stage the message in the dashboard — never auto-send
-- [ ] **Dashboard Integration:**
-  - Referral contacts displayed alongside each matched job
-  - One-click to copy the drafted referral message
-  - One-click to open the contact's LinkedIn profile
+  - Included in Discord notification — copy-pasteable, never auto-sent
 
 ### Phase 4 — Resume Variant Selector + LLM Drafting (3–4 days)
 
@@ -232,7 +226,6 @@ class EmailEvent(Base):
 
 - [ ] **Selection logic** — score each variant against the JD:
   ```python
-  # Each variant has a keyword set it's optimized for
   VARIANT_KEYWORDS = {
       "quant": ["quantitative", "trading", "stochastic", "options", "pricing",
                "risk", "derivatives", "fixed income", "alpha", "portfolio",
@@ -252,7 +245,7 @@ class EmailEvent(Base):
       return best, scores[best]
   ```
 - [ ] Store `Job.resume_variant` and `Job.resume_match_score`
-- [ ] Edge case: if scores are within 0.05 of each other, flag for manual selection in dashboard
+- [ ] Edge case: if scores are within 0.05 of each other, flag for manual selection in Discord
 - [ ] Also set `Job.role_category` (`"quant"` or `"tech"`) — this drives cover letter tone as well
 
 #### 4b. LLM Cover Letter Generation
@@ -267,79 +260,67 @@ class EmailEvent(Base):
 - [ ] **Free-Text Answer Drafting:**
   - Some portals ask "Why do you want to work at X?" or "Describe a project..."
   - Pre-generate 2–3 common answers, templated with company/role specifics
-  - Staged as clipboard-ready text in the dashboard
+  - Delivered as a text block in the Discord notification
 - [ ] **Caching:** Hash `(company, job_title, description_hash)` → skip re-generation for similar roles
 
-### Phase 5 — Application Stager (3–5 days)
+### Phase 5 — Discord Bot & Notification Delivery (4–5 days)
 
-This is the **core differentiator** from v1. Instead of submitting, we pre-fill and hand off.
+This is the **core delivery mechanism**. Everything the pipeline prepares gets packaged and sent to your Discord server.
 
-- [ ] **Persistent Browser Context:**
+- [ ] **Discord Server Structure:**
+  ```
+  #job-alerts          — high-confidence matches (score ≥ 0.6), auto-notified
+  #job-review          — medium-confidence matches (0.3–0.6), for manual triage
+  #status-updates      — email parser events (OA received, interview, rejection)
+  #daily-digest        — daily summary of pipeline activity
+  #bot-commands        — interact with the bot (search, stats, force-refresh)
+  ```
+
+- [ ] **Job Alert Embed Format:**
   ```python
-  # Launch a VISIBLE browser with your real profile data
-  context = await playwright.chromium.launch_persistent_context(
-      user_data_dir="./browser_profile",
-      headless=False,       # YOU see the browser
-      viewport={"width": 1440, "height": 900},
+  embed = discord.Embed(
+      title=f"🎯 {job.company} — {job.title}",
+      url=job.application_url,
+      color=0x00FF88 if job.role_category == "quant" else 0x5865F2,
   )
+  embed.add_field(name="📊 Score", value=f"{job.relevance_score:.0%}", inline=True)
+  embed.add_field(name="📄 Resume", value=f"`{job.resume_variant}` ({job.resume_match_score:.0%})", inline=True)
+  embed.add_field(name="🏷️ Keywords", value=", ".join(job.matched_keywords[:8]), inline=False)
+  embed.add_field(name="🔗 Referrals", value=referral_text or "None found", inline=False)
+  embed.set_footer(text=f"Source: {job.source} | Discovered: {job.discovered_at:%b %d %H:%M}")
   ```
-  - Pre-logged into LinkedIn, Handshake, Workday, etc. via saved session
-  - Your real cookies, extensions, and fingerprint — zero bot detection risk
 
-- [ ] **Staging Workflow:**
-  1. Open the `application_url` in a new tab
-  2. Wait for the form to load
-  3. Auto-fill fields using heuristic label matching:
-     - Detect `<input>`, `<select>`, `<textarea>` elements
-     - Match labels/placeholders to your personal info schema
-     - Fill via `page.fill()` and `page.select_option()`
-  4. Upload resume via `page.set_input_files()` using the selected variant
-  5. If cover letter upload exists, attach the generated PDF
-  6. Paste any free-text answers
-  7. **STOP before Submit** — play a notification sound + Discord ping
-  8. Tab stays open for your review; you fix any mis-fills and click Submit
+- [ ] **File Attachments per notification:**
+  - ✅ Cover letter PDF (tailored to this role)
+  - ✅ Selected resume PDF (quant or tech variant)
+  - ✅ Referral message draft (as a text block in the embed, copy-pasteable)
+  - ✅ Pre-drafted free-text answers (if applicable)
 
-- [ ] **Batch Staging Mode:**
-  - CLI command: `python -m src.cli stage --batch 10`
-  - Opens 10 applications in separate tabs, all pre-filled
-  - You tab through, review each, submit, and mark as done
-  - Status updates to `SUBMITTED` when you confirm in CLI/dashboard
+- [ ] **Reaction-Based Workflow:**
+  | Reaction | Action |
+  |---|---|
+  | ✅ | Mark as `SUBMITTED` — you applied |
+  | ❌ | Mark as `SKIPPED` — not interested |
+  | 🔄 | Regenerate cover letter with different tone |
+  | 📄 | Switch resume variant (quant ↔ tech) |
+  | 👤 | Show full referral contact details + drafted message |
 
-- [ ] **Field Mapping Heuristics:**
-  ```python
-  FIELD_MAP = {
-      r"first.?name": personal.first_name,
-      r"last.?name": personal.last_name,
-      r"email": personal.email,
-      r"phone": personal.phone,
-      r"university|school|college": personal.university,
-      r"gpa|grade": personal.gpa,
-      r"graduat": personal.graduation_date,
-      r"work.?auth|sponsor|visa": personal.work_authorization,
-      r"linkedin": personal.linkedin_url,
-      r"github": personal.github_url,
-  }
-  ```
-  - Match against: `label[for]`, `aria-label`, `placeholder`, `name` attribute
-  - Log confidence per field; highlight low-confidence fills in the dashboard
+- [ ] **Bot Slash Commands:**
+  | Command | Description |
+  |---|---|
+  | `/stats` | Pipeline summary: matched, notified, submitted, by company |
+  | `/search <keyword>` | Search past jobs by keyword |
+  | `/status <company>` | Show all jobs + statuses for a given company |
+  | `/refresh` | Force an immediate scrape cycle |
+  | `/digest` | Trigger daily digest now |
 
-- [ ] **Clipboard Integration:**
-  - For fields that resist programmatic fill (e.g., React-controlled inputs), copy value to clipboard + show a toast: "Paste into {field_name}"
+- [ ] **Daily Digest** (posted to `#daily-digest` at 9 AM):
+  - New jobs discovered today
+  - Jobs awaiting your action (notified but no reaction)
+  - Status changes from email parser
+  - Pipeline health (source uptime, error counts)
 
-### Phase 6 — Notifications & Dashboard (2–3 days)
-- [ ] **Discord Webhooks:**
-  - `NEW_MATCH`: "🎯 **Jane Street — Quantitative Researcher (New Grad)** — Score: 0.87 — Resume: quant — Referral: John Doe (1st°)"
-  - `STAGED`: "📋 Application staged — 3 tabs open, ready for review"
-  - `STATUS_CHANGE`: "📧 **Google SWE** status: SUBMITTED → OA_RECEIVED — Deadline: May 5"
-  - `DAILY_DIGEST`: Summary of new postings, staged apps, submitted count, pipeline funnel
-- [ ] **Streamlit Dashboard:**
-  - **Review Queue**: Table of matched jobs, sortable by score/company/date
-  - **Job Detail Panel**: JD, matched keywords, referral contacts, cover letter preview, selected resume variant
-  - **Actions**: "Stage Now", "Skip", "Mark Submitted", "Edit Cover Letter", "Override Resume Variant"
-  - **Pipeline View**: Kanban-style board: Matched → Staged → Submitted → OA → Interview → Offer/Rejected
-  - **Stats**: Applications by status, by company, by week; resume variant distribution; referral conversion rate
-
-### Phase 7 — Email Parser & Application Status CRM (3–4 days)
+### Phase 6 — Email Parser & Application Status CRM (3–4 days)
 
 Closes the loop from submission → outcome tracking with zero manual data entry.
 
@@ -349,7 +330,6 @@ Closes the loop from submission → outcome tracking with zero manual data entry
   - Poll every 5 min via Celery Beat (or use Gmail push notifications via Pub/Sub for real-time)
 - [ ] **Email Classification Pipeline:**
   ```python
-  # Pattern-based classifier with LLM fallback
   EMAIL_PATTERNS = {
       "confirmation": [
           r"application.*(received|confirmed|submitted)",
@@ -378,30 +358,28 @@ Closes the loop from submission → outcome tracking with zero manual data entry
   ```
 - [ ] **Job Matching:**
   - Match incoming emails to `Job` records by fuzzy-matching `sender` domain → `Job.company` and `subject` → `Job.title`
-  - Unmatched emails flagged for manual linking in the dashboard
+  - Unmatched emails flagged in `#status-updates` for manual linking
 - [ ] **Data Extraction:**
   - OA emails: extract assessment URL + deadline via regex
   - Interview emails: extract proposed dates/times, interviewer names
   - Store in `EmailEvent.extracted_data` as JSON
 - [ ] **Automated Actions on Status Change:**
-  - `OA_RECEIVED`: Create Google Calendar event with deadline via Calendar API
-  - `INTERVIEW`: Create calendar event with interview details
-  - `REJECTED`: Auto-archive; update dashboard stats
-  - All transitions → Discord notification
-- [ ] **Dashboard Integration:**
-  - Email timeline per job: see every email exchange in chronological order
-  - Pipeline funnel metrics: % conversion at each stage (Applied → OA → Interview → Offer)
-  - Deadline alerts: upcoming OA deadlines sorted by urgency
+  - `OA_RECEIVED`: Create Google Calendar event with deadline via Calendar API + Discord alert
+  - `INTERVIEW`: Create calendar event + Discord alert with interview details
+  - `REJECTED`: Discord notification; update stats
+  - All transitions posted to `#status-updates`
+- [ ] **Pipeline Funnel** (available via `/stats`):
+  - % conversion at each stage: Notified → Submitted → OA → Interview → Offer
 
 ---
 
 ## 3. Feature Expansion (Beyond Core)
 
 ### 3a. Application Timing Optimizer
-Track `submitted_at` timestamps vs. outcomes. Hypothesis: apps submitted within the first 48 hours of posting have higher response rates. Use this data to prioritize the staging queue by posting age.
+Track `submitted_at` timestamps vs. outcomes. Hypothesis: apps submitted within the first 48 hours of posting have higher response rates. Use this data to prioritize notification ordering by posting age.
 
 ### 3b. JD Change Detection
-Some companies silently update JDs (e.g., changing "3+ years" to "0-2 years" or adding new locations). Diff each scrape against the stored `description_raw`. Alert on material changes to previously-skipped postings.
+Some companies silently update JDs (e.g., changing "3+ years" to "0-2 years" or adding new locations). Diff each scrape against the stored `description_raw`. Alert in `#job-alerts` on material changes to previously-skipped postings.
 
 ### 3c. Portfolio Link Injection
 For applications with a "portfolio" or "website" field, auto-generate a personalized one-pager via GitHub Pages that highlights projects relevant to the specific JD. Templated HTML + LLM-selected project descriptions.
@@ -411,7 +389,7 @@ For applications with a "portfolio" or "website" field, auto-generate a personal
 ## 4. Risk Mitigation
 
 > [!TIP]
-> The semi-automated model **dramatically** reduces anti-bot risk. The scraping phase is the only automated external interaction, and the staging phase uses your real browser profile. Most of the v1 anti-bot complexity is now unnecessary.
+> Since the system only scrapes and notifies — no automated form-filling or submission — anti-bot risk is limited entirely to the scraping phase. You apply manually via your own browser.
 
 ### 4a. Scraping Phase (Automated — Moderate Risk)
 
@@ -421,23 +399,14 @@ For applications with a "portfolio" or "website" field, auto-generate a personal
 | **Residential proxies** | BrightData / Smartproxy for LinkedIn and Workday scraping. ~$15/mo for this volume. |
 | **Rate limiting** | Max 1 request/3s per source. Celery rate limits: `@task(rate_limit="20/m")` |
 | **Session reuse** | Save `storage_state` for authenticated sites. Avoid re-login per cycle. |
-| **`playwright-stealth`** | Patches webdriver detection. Only needed for scraping, not staging. |
+| **`playwright-stealth`** | Patches webdriver detection for headless scraping. |
 | **User-Agent pool** | 10–15 real Chrome UAs, rotated per session. |
 
-### 4b. Staging Phase (Semi-Manual — Near-Zero Risk)
-
-| Concern | Why It's Not a Problem |
-|---|---|
-| **Bot detection** | You're using a real, headed browser with your real cookies. You ARE the user. |
-| **CAPTCHA** | You solve them yourself during the review step. No solver API needed. |
-| **Dynamic DOM** | You see the page. If auto-fill misses a field, you fill it manually. |
-| **ToS violations** | Manual submission = fully compliant with every platform's ToS. |
-
-### 4c. Resilience Patterns (Scraping Layer)
+### 4b. Resilience Patterns
 - **Retry with backoff**: Celery `autoretry_for=(HTTPError,)`, `retry_backoff=True`, `max_retries=3`
-- **Circuit breaker**: >5 consecutive failures on a source → pause + Discord alert
+- **Circuit breaker**: >5 consecutive failures on a source → pause + Discord alert in `#bot-commands`
 - **Screenshot on failure**: `page.screenshot()` for debugging scraping errors
-- **Idempotency**: Dedup on `(source, external_id)` before insert; skip already-matched jobs
+- **Idempotency**: Dedup on `(source, external_id)` before insert; skip already-notified jobs
 - **Graceful degradation**: If LinkedIn scraping fails, the system still runs on API sources
 
 ---
@@ -451,13 +420,12 @@ For applications with a "portfolio" or "website" field, auto-generate a personal
 | P2: Filtering | 2–3 days | 10 days |
 | P3: Referral Network | 3–4 days | 14 days |
 | P4: Resume Selector + LLM Drafting | 3–4 days | 18 days |
-| P5: Application Stager | 3–5 days | 23 days |
-| P6: Notifications + Dashboard | 2–3 days | 26 days |
-| P7: Email Parser + Status CRM | 3–4 days | 30 days |
-| **Total MVP** | | **~4–5 weeks** |
+| P5: Discord Bot + Delivery | 4–5 days | 23 days |
+| P6: Email Parser + Status CRM | 3–4 days | 27 days |
+| **Total MVP** | | **~4 weeks** |
 
 > [!TIP]
-> **Suggested build order for fastest time-to-value**: P0 → P1 (Greenhouse/Lever APIs only) → P2 → P4 (resume selector + basic cover letter) → P5 (basic staging). This gets you a working scrape → filter → select resume → pre-fill loop in ~12 days. Add referrals (P3), dashboard (P6), and email tracking (P7) incrementally.
+> **Suggested build order for fastest time-to-value**: P0 → P1 (Greenhouse/Lever APIs only) → P2 → P5 (basic Discord webhook alerts) → P4 (resume selector + cover letter). This gets you a working scrape → filter → Discord notification loop in ~10 days. Add referrals (P3), bot commands, and email tracking (P6) incrementally.
 
 > [!NOTE]
-> **P7 can run independently** once you start manually submitting applications. Even before the stager is built, you can deploy the email parser against your Gmail to start tracking statuses of applications you submit manually. Consider starting it in parallel with P5.
+> **P6 can run independently** once you start manually submitting applications. Even before the full bot is built, you can deploy the email parser against your Gmail to start tracking statuses and posting updates to `#status-updates`.
